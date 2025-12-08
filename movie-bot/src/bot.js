@@ -608,7 +608,8 @@ if (process.env.RENDER) {
   bot.launch({
     webhook: {
       domain: domain,
-      port: process.env.PORT || 10000,
+      const PORT = process.env.PORT || 10000;
+      app.listen(PORT);
       hookPath: '/webhook'
     }
   }).then(() => {
@@ -635,4 +636,5 @@ if (process.env.RENDER) {
 // Graceful stop
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
 
