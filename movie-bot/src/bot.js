@@ -608,47 +608,57 @@ if (process.env.RENDER) {
   const port = process.env.PORT || 10000;
   
   // Express server yaratish (admin panel uchun)
-  const express = require('express');
-  const app = express();
+  // Admin panel va serverni sozlash
+const express = require('express');
+const adminApp = express();
+const PORT = process.env.PORT || 10000;
+
+// Middleware
+adminApp.set('view engine', 'ejs');
+adminApp.use(express.urlencoded({ extended: true }));
+adminApp.use(express.json());
+
+// Health check
+const { setupHealthEndpoint } = require('./monitoring');
+setupHealthEndpoint(adminApp, bot);
+
+// Admin routes (admin.js dan import qilish o'rniga bu yerda qo'shish)
+// ... (admin.js dagi barcha route'larni bu yerga ko'chiring)
+
+// Botni ishga tushirish
+if (process.env.RENDER) {
+  // Production - Webhook mode
+  const domain = process.env.RENDER_EXTERNAL_URL || 
+                 `https://movie-bot-d3do.onrender.com`;
   
-  // Health check
-  const { setupHealthEndpoint } = require('./monitoring');
-  setupHealthEndpoint(app, bot);
-  
-  // Admin panel route'larini qo'shish
-  // (admin.js ichida app yaratilgan, uni export qilish kerak)
-  
-  // Webhook ni sozlash
+  // Webhook sozlash
   bot.telegram.setWebhook(`${domain}/webhook`).then(() => {
-    console.log('✅ Webhook o\'rnatildi:', `${domain}/webhook`);
-  }).catch(err => {
-    console.error('❌ Webhook xatosi:', err);
+    console.log('✅ Webhook sozlandi:', `${domain}/webhook`);
   });
   
-  // Express serverni ishga tushirish
-  app.use(bot.webhookCallback('/webhook'));
+  // Bot webhook callback
+  adminApp.use(bot.webhookCallback('/webhook'));
   
-  app.listen(port, '0.0.0.0', () => {
-    console.log('✅ Bot ishga tushdi (Webhook mode)!');
-    console.log(`🤖 Bot username: @${bot.botInfo.username}`);
-    console.log(`🌐 Domain: ${domain}`);
-    console.log(`📊 Admin panel: ${domain}/admin/login`);
+  // Server ishga tushirish
+  adminApp.listen(PORT, '0.0.0.0', () => {
+    console.log('✅ Server ishga tushdi!');
+    console.log(`🌐 URL: ${domain}`);
+    console.log(`📊 Admin: ${domain}/admin/login`);
   });
   
 } else {
-  // Local - polling mode
-  bot.launch()
-    .then(() => {
-      console.log('✅ Bot ishga tushdi (Polling mode)!');
-      console.log(`🤖 Bot username: @${bot.botInfo.username}`);
-      console.log(`📊 Admin panel: http://localhost:${process.env.PORT || 3000}/admin/login`);
-    })
-    .catch(err => {
-      console.error('❌ Bot ishga tushmadi:', err);
-    });
+  // Development - Polling mode
+  bot.launch().then(() => {
+    console.log('✅ Bot ishga tushdi (Polling)!');
+  });
+  
+  adminApp.listen(PORT, () => {
+    console.log(`🌐 Admin: http://localhost:${PORT}/admin/login`);
+  });
 }
 
-// Graceful stop
+// Graceful shutdown
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
 
