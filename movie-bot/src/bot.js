@@ -596,31 +596,45 @@ bot.catch((err, ctx) => {
 });
 
 // Admin panel
+// Oxirgi qismini quyidagicha o'zgartiring:
+
+// Admin panel
 require('./admin')(bot);
 
 // Botni ishga tushirish
-// Render.com uchun webhook (production)
-// Local uchun polling (development)
 if (process.env.RENDER) {
   // Render.com - webhook mode
-  const domain = process.env.RENDER_EXTERNAL_URL 
-    || `https://${process.env.RENDER_SERVICE_NAME}.onrender.com`;
+  const domain = process.env.RENDER_EXTERNAL_URL || `https://${process.env.RENDER_SERVICE_NAME}.onrender.com`;
+  const port = process.env.PORT || 10000;
   
-  bot.launch({
-    webhook: {
-      domain: domain,
-      port: process.env.PORT,   // ✅ BU YERDA FAQAT SHU QOLADI
-      hookPath: '/webhook'
-    }
-  }).then(() => {
+  // Express server yaratish (admin panel uchun)
+  const express = require('express');
+  const app = express();
+  
+  // Health check
+  const { setupHealthEndpoint } = require('./monitoring');
+  setupHealthEndpoint(app, bot);
+  
+  // Admin panel route'larini qo'shish
+  // (admin.js ichida app yaratilgan, uni export qilish kerak)
+  
+  // Webhook ni sozlash
+  bot.telegram.setWebhook(`${domain}/webhook`).then(() => {
+    console.log('✅ Webhook o\'rnatildi:', `${domain}/webhook`);
+  }).catch(err => {
+    console.error('❌ Webhook xatosi:', err);
+  });
+  
+  // Express serverni ishga tushirish
+  app.use(bot.webhookCallback('/webhook'));
+  
+  app.listen(port, '0.0.0.0', () => {
     console.log('✅ Bot ishga tushdi (Webhook mode)!');
     console.log(`🤖 Bot username: @${bot.botInfo.username}`);
     console.log(`🌐 Domain: ${domain}`);
     console.log(`📊 Admin panel: ${domain}/admin/login`);
-  }).catch(err => {
-    console.error('❌ Bot ishga tushmadi:', err);
   });
-
+  
 } else {
   // Local - polling mode
   bot.launch()
@@ -637,3 +651,4 @@ if (process.env.RENDER) {
 // Graceful stop
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
