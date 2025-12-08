@@ -10,7 +10,7 @@ const { setupErrorLogging, startHealthMonitoring } = require('./monitoring');
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // MongoDB ulanish
-//connectDB();
+connectDB();
 
 // Error logging
 setupErrorLogging();
@@ -603,13 +603,13 @@ require('./admin')(bot);
 // Local uchun polling (development)
 if (process.env.RENDER) {
   // Render.com - webhook mode
-  const domain = process.env.RENDER_EXTERNAL_URL || `https://${process.env.RENDER_SERVICE_NAME}.onrender.com`;
+  const domain = process.env.RENDER_EXTERNAL_URL 
+    || `https://${process.env.RENDER_SERVICE_NAME}.onrender.com`;
   
   bot.launch({
     webhook: {
       domain: domain,
-      const PORT = process.env.PORT || 10000;
-      app.listen(PORT);
+      port: process.env.PORT,   // ✅ BU YERDA FAQAT SHU QOLADI
       hookPath: '/webhook'
     }
   }).then(() => {
@@ -620,6 +620,7 @@ if (process.env.RENDER) {
   }).catch(err => {
     console.error('❌ Bot ishga tushmadi:', err);
   });
+
 } else {
   // Local - polling mode
   bot.launch()
@@ -636,5 +637,3 @@ if (process.env.RENDER) {
 // Graceful stop
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
-
-
