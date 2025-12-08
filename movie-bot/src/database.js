@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 // MongoDB ulanish
 const connectDB = async () => {
   try {
-    await mongoose.connect(process.env.MONGODB_URI);
+    await mongoose.connect(process.env.MONGO_URI);
     console.log('✅ MongoDB ulanish muvaffaqiyatli');
   } catch (error) {
     console.error('❌ MongoDB ulanish xatosi:', error);
@@ -49,5 +49,6 @@ const downloadLogSchema = new mongoose.Schema({
 const User = mongoose.model('User', userSchema);
 const Stats = mongoose.model('Stats', statsSchema);
 const DownloadLog = mongoose.model('DownloadLog', downloadLogSchema);
+
 
 module.exports = { connectDB, User, Stats, DownloadLog };
