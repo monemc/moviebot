@@ -1,15 +1,11 @@
 {
   "name": "telegram-movie-bot",
   "version": "2.0.0",
-  "description": "Premium Telegram Movie Bot with Admin Panel",
   "main": "src/bot.js",
   "scripts": {
     "start": "node src/bot.js",
     "dev": "nodemon src/bot.js"
   },
-  "keywords": ["telegram", "bot", "movie", "tmdb"],
-  "author": "Your Name",
-  "license": "MIT",
   "dependencies": {
     "telegraf": "^4.15.0",
     "axios": "^1.6.2",
