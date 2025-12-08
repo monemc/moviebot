@@ -10,7 +10,7 @@ const { setupErrorLogging, startHealthMonitoring } = require('./monitoring');
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // MongoDB ulanish
-connectDB();
+//connectDB();
 
 // Error logging
 setupErrorLogging();
@@ -635,3 +635,4 @@ if (process.env.RENDER) {
 // Graceful stop
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
