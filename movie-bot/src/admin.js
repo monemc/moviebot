@@ -146,7 +146,8 @@ module.exports = function(bot) {
   // Dashboard
   app.get('/admin/dashboard', requireAuth, async (req, res) => {
     try {
-      const totalUsers = await User.countDocuments();
+      //const totalUsers = await User.countDocuments();
+      const userCount = 0;
       const subscribedUsers = await User.countDocuments({ isSubscribed: true });
       const totalDownloads = await DownloadLog.countDocuments();
       
@@ -195,7 +196,8 @@ module.exports = function(bot) {
         .skip(skip)
         .limit(limit);
 
-      const totalUsers = await User.countDocuments();
+      //const totalUsers = await User.countDocuments();
+      const userCount = 0;
       const totalPages = Math.ceil(totalUsers / limit);
 
       res.send(generateUsersHTML(users, page, totalPages));
@@ -615,4 +617,5 @@ function generateUsersHTML(users, page, totalPages) {
 </body>
 </html>
   `;
+
 }
