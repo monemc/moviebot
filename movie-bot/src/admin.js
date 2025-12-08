@@ -5,30 +5,33 @@ const { User, Stats, DownloadLog } = require('./database');
 
 module.exports = function(bot) {
   const app = express();
-  const PORT = process.env.PORT || 3000;
+  
+  // RENDER muhitida port ishlatmaymiz (webhook bilan birga ishlaydi)
+  if (!process.env.RENDER) {
+    const PORT = process.env.PORT || 3000;
+    
+    // Middleware
+    app.set('view engine', 'ejs');
+    app.use(express.urlencoded({ extended: true }));
+    app.use(express.json());
+    app.use(session({
+      secret: process.env.SESSION_SECRET || 'your-secret-key-change-this',
+      resave: false,
+      saveUninitialized: false,
+      cookie: { maxAge: 24 * 60 * 60 * 1000 }
+    }));
 
-  // Middleware
-  app.set('view engine', 'ejs');
-  app.use(express.urlencoded({ extended: true }));
-  app.use(express.json());
-  app.use(session({
-    secret: process.env.SESSION_SECRET || 'your-secret-key-change-this',
-    resave: false,
-    saveUninitialized: false,
-    cookie: { maxAge: 24 * 60 * 60 * 1000 } // 24 soat
-  }));
+    // Admin kredentiallari
+    const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+    const ADMIN_PASSWORD_HASH = bcrypt.hashSync(process.env.ADMIN_PASSWORD || 'admin123', 10);
 
-  // Admin kredentiallari
-  const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
-  const ADMIN_PASSWORD_HASH = bcrypt.hashSync(process.env.ADMIN_PASSWORD || 'admin123', 10);
-
-  // Auth middleware
-  function requireAuth(req, res, next) {
-    if (req.session.isAuthenticated) {
-      return next();
+    // Auth middleware
+    function requireAuth(req, res, next) {
+      if (req.session.isAuthenticated) {
+        return next();
+      }
+      res.redirect('/admin/login');
     }
-    res.redirect('/admin/login');
-  }
 
   // Login sahifasi
   app.get('/admin/login', (req, res) => {
@@ -260,13 +263,16 @@ module.exports = function(bot) {
 
   // Health check endpoint
   const { setupHealthEndpoint } = require('./monitoring');
-  setupHealthEndpoint(app, bot);
+    setupHealthEndpoint(app, bot);
 
-  // Server ishga tushirish
-  app.listen(PORT, () => {
-    console.log(`🌐 Admin panel: http://localhost:${PORT}/admin/login`);
-    console.log(`❤️  Health check: http://localhost:${PORT}/health`);
-  });
+    // Server ishga tushirish (faqat local uchun)
+    app.listen(PORT, () => {
+      console.log(`🌐 Admin panel: http://localhost:${PORT}/admin/login`);
+      console.log(`❤️  Health check: http://localhost:${PORT}/health`);
+    });
+  }
+  
+  return app;
 };
 
 // Dashboard HTML
@@ -619,3 +625,4 @@ function generateUsersHTML(users, page, totalPages) {
   `;
 
 }
+
