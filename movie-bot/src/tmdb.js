@@ -1,114 +1,71 @@
-const axios = require('axios');
+const https = require('https');
 
-const TMDB_API_KEY = process.env.TMDB_API_KEY;
-const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
-const IMAGE_BASE_URL = 'https://image.tmdb.org/t/p/w500';
-
-// Film qidirish
-async function searchMovies(query) {
-  try {
-    const response = await axios.get(`${TMDB_BASE_URL}/search/movie`, {
-      params: {
-        api_key: TMDB_API_KEY,
-        query: query,
-        language: 'en-US',
-        page: 1
-      }
-    });
-    return response.data.results;
-  } catch (error) {
-    console.error('❌ TMDb qidiruv xatosi:', error.message);
-    return [];
-  }
-}
-
-// Film tafsilotlari
-async function getMovieDetails(movieId) {
-  try {
-    const response = await axios.get(`${TMDB_BASE_URL}/movie/${movieId}`, {
-      params: {
-        api_key: TMDB_API_KEY,
-        language: 'en-US'
-      }
-    });
-    return response.data;
-  } catch (error) {
-    console.error('❌ Film tafsilotlari xatosi:', error.message);
-    return null;
-  }
-}
-
-// Mashhur filmlar
-async function getTrending() {
-  try {
-    const response = await axios.get(`${TMDB_BASE_URL}/trending/movie/week`, {
-      params: {
-        api_key: TMDB_API_KEY
-      }
-    });
-    return response.data.results;
-  } catch (error) {
-    console.error('❌ Trending filmlar xatosi:', error.message);
-    return [];
-  }
-}
-
-// Trailer olish
-async function getTrailer(movieId) {
-  try {
-    const response = await axios.get(`${TMDB_BASE_URL}/movie/${movieId}/videos`, {
-      params: {
-        api_key: TMDB_API_KEY
-      }
-    });
+class TMDB {
+    constructor(apiKey) {
+        this.apiKey = apiKey;
+        this.baseUrl = 'https://api.themoviedb.org/3';
+        this.imageBaseUrl = 'https://image.tmdb.org/t/p/w500';
+    }
     
-    const trailer = response.data.results.find(
-      video => video.type === 'Trailer' && video.site === 'YouTube'
-    );
+    async searchMovie(query) {
+        return new Promise((resolve, reject) => {
+            const url = `${this.baseUrl}/search/movie?api_key=${this.apiKey}&query=${encodeURIComponent(query)}&language=uz-UZ`;
+            
+            https.get(url, (res) => {
+                let data = '';
+                
+                res.on('data', (chunk) => {
+                    data += chunk;
+                });
+                
+                res.on('end', () => {
+                    try {
+                        const result = JSON.parse(data);
+                        resolve(result.results || []);
+                    } catch (error) {
+                        reject(error);
+                    }
+                });
+            }).on('error', reject);
+        });
+    }
     
-    return trailer ? `https://www.youtube.com/watch?v=${trailer.key}` : null;
-  } catch (error) {
-    console.error('❌ Trailer xatosi:', error.message);
-    return null;
-  }
+    async getMovieDetails(movieId) {
+        return new Promise((resolve, reject) => {
+            const url = `${this.baseUrl}/movie/${movieId}?api_key=${this.apiKey}&language=uz-UZ`;
+            
+            https.get(url, (res) => {
+                let data = '';
+                
+                res.on('data', (chunk) => {
+                    data += chunk;
+                });
+                
+                res.on('end', () => {
+                    try {
+                        resolve(JSON.parse(data));
+                    } catch (error) {
+                        reject(error);
+                    }
+                });
+            }).on('error', reject);
+        });
+    }
+    
+    getImageUrl(path) {
+        return path ? `${this.imageBaseUrl}${path}` : null;
+    }
+    
+    formatMovieInfo(movie) {
+        return {
+            title: movie.title || movie.original_title,
+            year: movie.release_date?.split('-')[0] || 'N/A',
+            rating: movie.vote_average ? movie.vote_average.toFixed(1) : 'N/A',
+            description: movie.overview || 'Ma\'lumot yo\'q',
+            poster: this.getImageUrl(movie.poster_path),
+            genres: movie.genres?.map(g => g.name).join(', ') || 'N/A'
+        };
+    }
 }
 
-// Janr bo'yicha filmlar
-async function getMoviesByGenre(genreId) {
-  try {
-    const response = await axios.get(`${TMDB_BASE_URL}/discover/movie`, {
-      params: {
-        api_key: TMDB_API_KEY,
-        with_genres: genreId,
-        sort_by: 'popularity.desc',
-        language: 'en-US'
-      }
-    });
-    return response.data.results;
-  } catch (error) {
-    console.error('❌ Janr bo\'yicha filmlar xatosi:', error.message);
-    return [];
-  }
-}
-
-// Film ma'lumotlarini formatlash
-function formatMovieInfo(movie) {
-  return {
-    id: movie.id,
-    title: movie.title,
-    year: movie.release_date ? movie.release_date.split('-')[0] : 'N/A',
-    rating: movie.vote_average ? movie.vote_average.toFixed(1) : 'N/A',
-    overview: movie.overview || 'Tavsif mavjud emas',
-    poster: movie.poster_path ? `${IMAGE_BASE_URL}${movie.poster_path}` : null,
-    genres: movie.genres ? movie.genres.map(g => g.name).join(', ') : 'N/A'
-  };
-}
-
-module.exports = {
-  searchMovies,
-  getMovieDetails,
-  getTrending,
-  getTrailer,
-  getMoviesByGenre,
-  formatMovieInfo
-};
+module.exports = TMDB;
