@@ -1,91 +1,75 @@
-const { User } = require('./database');
-const { Markup } = require('telegraf');
-
-// Obuna tekshirish middleware
-async function subscriptionRequired(ctx, next) {
-  const userId = ctx.from.id;
-  const channelId = process.env.CHANNEL_ID;
-  
-  try {
-    const member = await ctx.telegram.getChatMember(channelId, userId);
-    const isSubscribed = ['creator', 'administrator', 'member'].includes(member.status);
+const middleware = {
+    // Admin tekshirish
+    isAdmin: (adminIds) => {
+        return async (ctx, next) => {
+            if (adminIds.includes(ctx.from.id)) {
+                return next();
+            }
+            await ctx.reply('❌ Sizda admin huquqi yo\'q!');
+        };
+    },
     
-    if (isSubscribed) {
-      // Foydalanuvchini yangilash
-      await User.findOneAndUpdate(
-        { telegramId: userId },
-        { isSubscribed: true, lastActivity: new Date() },
-        { upsert: true }
-      );
-      return next();
+    // Premium tekshirish
+    isPremium: (db) => {
+        return async (ctx, next) => {
+            const isPremium = await db.checkPremium(ctx.from.id);
+            ctx.isPremium = isPremium;
+            return next();
+        };
+    },
+    
+    // Rate limiting
+    rateLimit: (maxRequests = 10, windowMs = 60000) => {
+        const requests = new Map();
+        
+        return async (ctx, next) => {
+            const userId = ctx.from.id;
+            const now = Date.now();
+            
+            if (!requests.has(userId)) {
+                requests.set(userId, []);
+            }
+            
+            const userRequests = requests.get(userId);
+            const recentRequests = userRequests.filter(time => now - time < windowMs);
+            
+            if (recentRequests.length >= maxRequests) {
+                return ctx.reply('⏰ Iltimos, biroz kuting...');
+            }
+            
+            recentRequests.push(now);
+            requests.set(userId, recentRequests);
+            
+            return next();
+        };
+    },
+    
+    // Logging
+    logger: () => {
+        return async (ctx, next) => {
+            const start = Date.now();
+            const user = ctx.from;
+            
+            console.log(`[${new Date().toISOString()}] ${user.id} (@${user.username}): ${ctx.message?.text || 'callback'}`);
+            
+            await next();
+            
+            const duration = Date.now() - start;
+            console.log(`  ↳ Completed in ${duration}ms`);
+        };
+    },
+    
+    // Error handler
+    errorHandler: () => {
+        return async (ctx, next) => {
+            try {
+                await next();
+            } catch (error) {
+                console.error('Error:', error);
+                await ctx.reply('❌ Xatolik yuz berdi. Iltimos, qaytadan urinib ko\'ring.');
+            }
+        };
     }
-    
-    // Obuna bo'lmagan
-    await ctx.reply(
-      '⚠️ <b>Botdan foydalanish uchun kanalimizga obuna bo\'lishingiz kerak!</b>',
-      {
-        parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([
-          [Markup.button.url('📢 Kanalga Obuna Bo\'lish', `https://t.me/${channelId.replace('@', '')}`)],
-          [Markup.button.callback('✅ Obunani Tekshirish', 'check_subscription')]
-        ])
-      }
-    );
-  } catch (error) {
-    console.error('❌ Obuna tekshirish xatosi:', error);
-    return next(); // Xatolikda davom ettirish
-  }
-}
+};
 
-// Obuna tekshirish (callback uchun)
-async function checkSubscription(ctx) {
-  const userId = ctx.from.id;
-  const channelId = process.env.CHANNEL_ID;
-  
-  try {
-    const member = await ctx.telegram.getChatMember(channelId, userId);
-    return ['creator', 'administrator', 'member'].includes(member.status);
-  } catch (error) {
-    console.error('❌ Obuna tekshirish xatosi:', error);
-    return false;
-  }
-}
-
-// Yuklab olish limiti
-async function downloadCheck(ctx, movieId, movieTitle) {
-  const user = await User.findOne({ telegramId: ctx.from.id });
-  
-  // Premium foydalanuvchilar uchun limit yo'q
-  if (user?.isPremium) {
-    return true;
-  }
-  
-  // Kunlik limit tekshirish (masalan, 5 ta)
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  
-  const { DownloadLog } = require('./database');
-  const todayDownloads = await DownloadLog.countDocuments({
-    userId: ctx.from.id,
-    timestamp: { $gte: today }
-  });
-  
-  const DAILY_LIMIT = 5;
-  
-  if (todayDownloads >= DAILY_LIMIT) {
-    await ctx.reply(
-      `⚠️ <b>Kunlik limit tugadi!</b>\n\nSiz bugun ${DAILY_LIMIT} ta film yuklab oldingiz.\n\n💎 Premium obuna oling va cheklovsiz yuklab oling!`,
-      {
-        parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('🔄 Ertaga Qayta Urinish', `download_retry_${movieId}`)]
-        ])
-      }
-    );
-    return false;
-  }
-  
-  return true;
-}
-
-module.exports = { subscriptionRequired, checkSubscription, downloadCheck };
+module.exports = middleware;
