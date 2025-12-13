@@ -1,25 +1,30 @@
 {
   "name": "telegram-movie-bot",
   "version": "2.0.0",
-  "main": "src/bot.js",
+  "description": "Professional Telegram Movie Bot with Analytics",
+  "main": "bot.js",
   "scripts": {
-    "start": "node src/bot.js",
-    "dev": "nodemon src/bot.js"
+    "start": "node bot.js",
+    "dev": "nodemon bot.js",
+    "test": "node test.js"
   },
+  "keywords": [
+    "telegram",
+    "bot",
+    "movie",
+    "cinema",
+    "video"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
   "dependencies": {
-    "telegraf": "^4.15.0",
-    "axios": "^1.6.2",
-    "dotenv": "^16.3.1",
-    "mongoose": "^8.0.3",
-    "express": "^4.18.2",
-    "express-session": "^1.17.3",
-    "bcryptjs": "^2.4.3",
-    "ejs": "^3.1.9"
+    "node-telegram-bot-api": "^0.64.0",
+    "dotenv": "^16.3.1"
   },
   "devDependencies": {
-    "nodemon": "^3.0.2"
+    "nodemon": "^3.0.1"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0"
   }
 }
