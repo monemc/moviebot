@@ -1,665 +1,660 @@
+// ============================================
+// bot.js - Main Entry Point
+// ============================================
 require('dotenv').config();
-const { Telegraf, Markup } = require('telegraf');
-const { connectDB, User, DownloadLog } = require('./database');
-const { searchMovies, getMovieDetails, getTrending, getTrailer, formatMovieInfo } = require('./tmdb');
-const { subscriptionRequired, downloadCheck } = require('./middleware');
-const { scheduleStatsUpdate } = require('./analytics');
-const { getPersonalizedRecommendations, translate, getUserLanguage, setUserLanguage, addToWatchlist, removeFromWatchlist, generateShareMessage } = require('./premium');
-const { setupErrorLogging, startHealthMonitoring } = require('./monitoring');
+const TelegramBot = require('node-telegram-bot-api');
+const Database = require('./database');
+const Analytics = require('./analytics');
+const AdminPanel = require('./admin');
+const PremiumManager = require('./premium');
+const Monitoring = require('./monitoring');
+const TMDB = require('./tmdb');
+const middleware = require('./middleware');
 
-const bot = new Telegraf(process.env.BOT_TOKEN);
+// ============================================
+// KONFIGURATSIYA
+// ============================================
+const config = {
+    botToken: process.env.BOT_TOKEN,
+    adminIds: process.env.ADMIN_IDS?.split(',').map(id => parseInt(id)) || [],
+    tmdbApiKey: process.env.TMDB_API_KEY || '', // Optional
+    port: process.env.PORT || 3000
+};
 
-// MongoDB ulanish
-connectDB();
+// ============================================
+// BOTNI ISHGA TUSHIRISH
+// ============================================
+const bot = new TelegramBot(config.botToken, { polling: true });
 
-// Error logging
-setupErrorLogging();
+// Modullarni initsializatsiya qilish
+const db = new Database();
+const analytics = new Analytics(db);
+const adminPanel = new AdminPanel(bot, db, analytics);
+const premiumManager = new PremiumManager(db);
+const monitoring = new Monitoring(bot, config.adminIds);
+const tmdb = config.tmdbApiKey ? new TMDB(config.tmdbApiKey) : null;
 
-// Health monitoring
-startHealthMonitoring(bot);
+// Admin states (foydalanuvchi dialoglarini kuzatish)
+const adminStates = new Map();
 
-// Statistika avtomatik yangilash
-scheduleStatsUpdate();
-
-// /start komandasi
-bot.start(subscriptionRequired, async (ctx) => {
-  const user = ctx.from;
-  
-  // Foydalanuvchini bazaga saqlash
-  await User.findOneAndUpdate(
-    { telegramId: user.id },
-    {
-      telegramId: user.id,
-      username: user.username,
-      firstName: user.first_name,
-      lastName: user.last_name,
-      isSubscribed: true,
-      lastActivity: new Date()
-    },
-    { upsert: true, new: true }
-  );
-
-  const lang = await getUserLanguage(user.id);
-  const welcomeText = `
-🎬 <b>${translate('welcome', lang)}</b>
-
-Salom, ${user.first_name}! 👋
-
-Bu bot orqali siz:
-✅ Filmlarni qidira olasiz
-✅ Shaxsiy tavsiyalar olasiz
-✅ Trailerlarni ko'ra olasiz
-✅ Sevimlilaringizga qo'sha olasiz
-✅ Yuklab olish linklarini ola olasiz
-
-📌 <b>Qanday Foydalanish?</b>
-• Film nomini yuboring
-• Yoki quyidagi tugmalardan foydalaning
-
-🌐 Tilni o'zgartirish: /language
-
-🎯 Qidirishni boshlang!
-  `;
-
-  await ctx.replyWithHTML(
-    welcomeText,
-    Markup.keyboard([
-      ['🔥 Mashhur Filmlar', '🎯 Men Uchun'],
-      ['🎭 Janrlar', '⭐ Sevimlilar'],
-      ['📋 Watchlist', '🔍 Qidirish'],
-      ['⚙️ Sozlamalar', 'ℹ️ Yordam']
-    ]).resize()
-  );
-});
-
-// Til o'zgartirish
-bot.command('language', async (ctx) => {
-  await ctx.reply(
-    '🌐 <b>Tilni tanlang / Choose language:</b>',
-    {
-      parse_mode: 'HTML',
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback('🇺🇿 O\'zbekcha', 'lang_uz')],
-        [Markup.button.callback('🇷🇺 Русский', 'lang_ru')],
-        [Markup.button.callback('🇬🇧 English', 'lang_en')]
-      ])
-    }
-  );
-});
-
-// Til callback
-bot.action(/lang_(\w+)/, async (ctx) => {
-  const lang = ctx.match[1];
-  await setUserLanguage(ctx.from.id, lang);
-  await ctx.answerCbQuery('✅ Til o\'zgartirildi!');
-  await ctx.reply(`✅ ${translate('welcome', lang)}`);
-});
-
-// Shaxsiy tavsiyalar
-bot.hears('🎯 Men Uchun', subscriptionRequired, async (ctx) => {
-  await ctx.reply('⏳ Sizga mos filmlar qidirilmoqda...');
-  
-  const movies = await getPersonalizedRecommendations(ctx.from.id);
-  
-  if (movies.length === 0) {
-    return ctx.reply('❌ Tavsiyalar topilmadi. Avval filmlarni sevimlilarga qo\'shing!');
-  }
-
-  await ctx.reply('🎯 <b>Sizga mos filmlar:</b>', { parse_mode: 'HTML' });
-  
-  for (const movie of movies.slice(0, 5)) {
-    await sendMovieCard(ctx, movie);
-  }
-});
-
-// Mashhur filmlar
-bot.hears('🔥 Mashhur Filmlar', subscriptionRequired, async (ctx) => {
-  await ctx.reply('⏳ Mashhur filmlar yuklanmoqda...');
-  
-  const movies = await getTrending();
-  
-  if (movies.length === 0) {
-    return ctx.reply('❌ Filmlar topilmadi. Iltimos, keyinroq urinib ko\'ring.');
-  }
-
-  for (const movie of movies.slice(0, 5)) {
-    await sendMovieCard(ctx, movie);
-  }
-});
-
-// Janrlar
-bot.hears('🎭 Janrlar', subscriptionRequired, async (ctx) => {
-  await ctx.reply(
-    '🎭 <b>Janrni tanlang:</b>',
-    {
-      parse_mode: 'HTML',
-      ...Markup.inlineKeyboard([
-        [
-          Markup.button.callback('🎬 Action', 'genre_28'),
-          Markup.button.callback('😂 Comedy', 'genre_35')
-        ],
-        [
-          Markup.button.callback('😱 Horror', 'genre_27'),
-          Markup.button.callback('💕 Romance', 'genre_10749')
-        ],
-        [
-          Markup.button.callback('🔬 Sci-Fi', 'genre_878'),
-          Markup.button.callback('🎭 Drama', 'genre_18')
-        ],
-        [
-          Markup.button.callback('🎪 Animation', 'genre_16'),
-          Markup.button.callback('🕵️ Thriller', 'genre_53')
-        ],
-        [
-          Markup.button.callback('⚔️ Adventure', 'genre_12'),
-          Markup.button.callback('🎵 Musical', 'genre_10402')
-        ]
-      ])
-    }
-  );
-});
-
-// Janr bo'yicha filmlar
-bot.action(/genre_(\d+)/, subscriptionRequired, async (ctx) => {
-  const genreId = ctx.match[1];
-  await ctx.answerCbQuery('⏳ Filmlar yuklanmoqda...');
-  
-  const { getMoviesByGenre } = require('./tmdb');
-  const movies = await getMoviesByGenre(genreId);
-  
-  for (const movie of movies.slice(0, 5)) {
-    await sendMovieCard(ctx, movie);
-  }
-});
-
-// Sevimlilar
-bot.hears('⭐ Sevimlilar', subscriptionRequired, async (ctx) => {
-  const user = await User.findOne({ telegramId: ctx.from.id });
-  
-  if (!user || user.favorites.length === 0) {
-    return ctx.reply('📝 Sizning sevimli filmlaringiz yo\'q.\n\nFilmlarni sevimlilaringizga qo\'shish uchun ⭐ tugmasini bosing.');
-  }
-
-  await ctx.reply(`⭐ Sizning sevimli filmlaringiz (${user.favorites.length} ta):`);
-  
-  for (const movieId of user.favorites.slice(0, 10)) {
-    const movie = await getMovieDetails(movieId);
-    if (movie) {
-      await sendMovieCard(ctx, movie);
-    }
-  }
-});
-
-// Watchlist
-bot.hears('📋 Watchlist', subscriptionRequired, async (ctx) => {
-  const user = await User.findOne({ telegramId: ctx.from.id });
-  
-  if (!user || !user.watchlist || user.watchlist.length === 0) {
-    return ctx.reply('📝 Watchlist bo\'sh.\n\nFilmlarni keyinroq ko\'rish uchun 📋 tugmasini bosing.');
-  }
-
-  await ctx.reply(`📋 Watchlist (${user.watchlist.length} ta):`);
-  
-  for (const movieId of user.watchlist.slice(0, 10)) {
-    const movie = await getMovieDetails(movieId);
-    if (movie) {
-      await sendMovieCard(ctx, movie);
-    }
-  }
-});
-
-// Sozlamalar
-bot.hears('⚙️ Sozlamalar', subscriptionRequired, async (ctx) => {
-  const user = await User.findOne({ telegramId: ctx.from.id });
-  const stats = `
-⚙️ <b>Sozlamalar</b>
-
-👤 <b>Profil:</b>
-• ID: <code>${ctx.from.id}</code>
-• Ism: ${ctx.from.first_name}
-• Username: @${ctx.from.username || 'N/A'}
-
-📊 <b>Statistika:</b>
-• Sevimlilar: ${user.favorites.length}
-• Watchlist: ${user.watchlist?.length || 0}
-• Qidiruvlar: ${user.totalSearches}
-• Ro'yxatdan o'tgan: ${new Date(user.createdAt).toLocaleDateString('uz-UZ')}
-
-⚙️ <b>Sozlamalar:</b>
-  `;
-
-  await ctx.replyWithHTML(
-    stats,
-    Markup.inlineKeyboard([
-      [Markup.button.callback('🌐 Tilni o\'zgartirish', 'change_language')],
-      [Markup.button.callback('🔔 Bildirishnomalar', 'toggle_notifications')],
-      [Markup.button.callback('📊 Mening statistikam', 'my_stats')],
-      [Markup.button.callback('🗑️ Ma\'lumotlarni o\'chirish', 'delete_data')]
-    ])
-  );
-});
-
-// Sozlamalar callbacks
-bot.action('change_language', async (ctx) => {
-  await ctx.answerCbQuery();
-  await ctx.reply(
-    '🌐 <b>Tilni tanlang:</b>',
-    {
-      parse_mode: 'HTML',
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback('🇺🇿 O\'zbekcha', 'lang_uz')],
-        [Markup.button.callback('🇷🇺 Русский', 'lang_ru')],
-        [Markup.button.callback('🇬🇧 English', 'lang_en')]
-      ])
-    }
-  );
-});
-
-bot.action('toggle_notifications', async (ctx) => {
-  const user = await User.findOne({ telegramId: ctx.from.id });
-  const newStatus = !user.notifications;
-  
-  await User.findOneAndUpdate(
-    { telegramId: ctx.from.id },
-    { notifications: newStatus }
-  );
-  
-  await ctx.answerCbQuery(`${newStatus ? '🔔 Bildirishnomalar yoqildi' : '🔕 Bildirishnomalar o\'chirildi'}`);
-});
-
-bot.action('my_stats', async (ctx) => {
-  const { getUserActivityAnalysis } = require('./analytics');
-  const stats = await getUserActivityAnalysis(ctx.from.id);
-  
-  if (stats) {
-    const message = `
-📊 <b>Sizning statistikangiz</b>
-
-📥 Jami yuklab olishlar: ${stats.totalDownloads}
-⭐ Sevimlilar: ${stats.favoriteCount}
-🔍 Qidiruvlar: ${stats.totalSearches}
-📅 A'zo bo'lganingizdan: ${Math.floor((Date.now() - stats.memberSince) / (1000 * 60 * 60 * 24))} kun
-
-🎬 <b>Oxirgi yuklab olishlar:</b>
-${stats.recentDownloads.slice(0, 5).map((d, i) => `${i + 1}. ${d.movieTitle}`).join('\n')}
-    `;
+// ============================================
+// MIDDLEWARE
+// ============================================
+bot.on('message', async (msg) => {
+    monitoring.incrementRequests();
     
-    await ctx.answerCbQuery();
-    await ctx.replyWithHTML(message);
-  }
-});
-
-bot.action('delete_data', async (ctx) => {
-  await ctx.answerCbQuery();
-  await ctx.reply(
-    '⚠️ <b>Ma\'lumotlaringizni o\'chirish</b>\n\nRostdan ham barcha ma\'lumotlaringizni o\'chirmoqchimisiz?',
-    {
-      parse_mode: 'HTML',
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback('✅ Ha, o\'chirish', 'confirm_delete')],
-        [Markup.button.callback('❌ Yo\'q, bekor qilish', 'cancel_delete')]
-      ])
+    // Foydalanuvchini ro'yxatga olish
+    if (msg.from && !db.users[msg.from.id]) {
+        await db.addUser(msg.from.id, {
+            username: msg.from.username,
+            firstName: msg.from.first_name,
+            lastName: msg.from.last_name
+        });
     }
-  );
 });
 
-bot.action('confirm_delete', async (ctx) => {
-  await User.findOneAndDelete({ telegramId: ctx.from.id });
-  await DownloadLog.deleteMany({ userId: ctx.from.id });
-  
-  await ctx.answerCbQuery('✅ Ma\'lumotlar o\'chirildi');
-  await ctx.reply('👋 Ma\'lumotlaringiz o\'chirildi. /start ni bosib qaytadan boshlashingiz mumkin.');
-});
-
-bot.action('cancel_delete', async (ctx) => {
-  await ctx.answerCbQuery('❌ Bekor qilindi');
-});
-
-// Film qidirish
-bot.on('text', subscriptionRequired, async (ctx) => {
-  const query = ctx.message.text;
-  
-  // Keyboard tugmalarini ignore qilish
-  const keyboards = ['🔥 Mashhur Filmlar', '🎯 Men Uchun', '🎭 Janrlar', '⭐ Sevimlilar', '📋 Watchlist', '🔍 Qidirish', '⚙️ Sozlamalar', 'ℹ️ Yordam'];
-  if (keyboards.includes(query)) return;
-
-  await ctx.reply('🔍 Qidirilmoqda...');
-  
-  const movies = await searchMovies(query);
-  
-  // Statistikani yangilash
-  await User.findOneAndUpdate(
-    { telegramId: ctx.from.id },
-    { $inc: { totalSearches: 1 }, lastActivity: new Date() }
-  );
-  
-  if (movies.length === 0) {
-    return ctx.reply('❌ Filmlar topilmadi. Boshqa nom bilan qidirib ko\'ring.');
-  }
-
-  await ctx.reply(`✅ ${movies.length} ta film topildi:`);
-  
-  for (const movie of movies.slice(0, 5)) {
-    await sendMovieCard(ctx, movie);
-  }
-});
-
-// Film kartasini yuborish
-async function sendMovieCard(ctx, movie) {
-  const info = formatMovieInfo(movie);
-  const user = await User.findOne({ telegramId: ctx.from.id });
-  
-  const isFavorite = user?.favorites?.includes(info.id);
-  const isInWatchlist = user?.watchlist?.includes(info.id);
-  
-  const caption = `
-🎬 <b>${info.title}</b> (${info.year})
-
-⭐ Reyting: ${info.rating}/10
-🎭 Janr: ${info.genres}
-
-📝 ${info.overview.substring(0, 200)}${info.overview.length > 200 ? '...' : ''}
-  `;
-
-  const keyboard = Markup.inlineKeyboard([
-    [
-      Markup.button.callback('🎥 Trailer', `trailer_${info.id}`),
-      Markup.button.callback(isFavorite ? '❤️ Sevimli' : '⭐ Sevimli', `favorite_${info.id}`)
-    ],
-    [
-      Markup.button.callback(isInWatchlist ? '✅ Watchlist' : '📋 Watchlist', `watchlist_${info.id}`),
-      Markup.button.callback('📤 Ulashish', `share_${info.id}`)
-    ],
-    [
-      Markup.button.callback('📥 Yuklab Olish', `download_${info.id}`)
-    ]
-  ]);
-
-  try {
-    if (info.poster) {
-      await ctx.replyWithPhoto(info.poster, {
-        caption: caption,
-        parse_mode: 'HTML',
-        ...keyboard
-      });
-    } else {
-      await ctx.replyWithHTML(caption, keyboard);
+// ============================================
+// OBUNA TEKSHIRISH
+// ============================================
+async function checkSubscription(userId) {
+    if (db.channels.length === 0) {
+        return { subscribed: true, notSubscribed: [] };
     }
-  } catch (error) {
-    console.error('Film kartasi yuborishda xato:', error.message);
-  }
+    
+    const notSubscribed = [];
+    
+    for (const channel of db.channels) {
+        if (channel.type === 'telegram') {
+            try {
+                const member = await bot.getChatMember(channel.channelId, userId);
+                if (member.status === 'left' || member.status === 'kicked') {
+                    notSubscribed.push(channel);
+                }
+            } catch (error) {
+                console.error('Subscription check error:', error.message);
+            }
+        }
+    }
+    
+    return {
+        subscribed: notSubscribed.length === 0,
+        notSubscribed
+    };
 }
 
-// Trailer
-bot.action(/trailer_(\d+)/, async (ctx) => {
-  const movieId = ctx.match[1];
-  await ctx.answerCbQuery('⏳ Trailer qidirilmoqda...');
-  
-  const trailerUrl = await getTrailer(movieId);
-  
-  if (trailerUrl) {
-    await ctx.reply(
-      '🎥 <b>Trailer:</b>',
-      {
-        parse_mode: 'HTML',
-        ...Markup.inlineKeyboard([
-          [Markup.button.url('▶️ Trailer Ko\'rish', trailerUrl)]
-        ])
-      }
-    );
-  } else {
-    await ctx.reply('❌ Trailer topilmadi.');
-  }
-});
-
-// Sevimlilar
-bot.action(/favorite_(\d+)/, async (ctx) => {
-  const movieId = parseInt(ctx.match[1]);
-  const user = await User.findOne({ telegramId: ctx.from.id });
-  
-  if (user.favorites.includes(movieId)) {
-    await User.findOneAndUpdate(
-      { telegramId: ctx.from.id },
-      { $pull: { favorites: movieId } }
-    );
-    await ctx.answerCbQuery('💔 Sevimlilardan o\'chirildi');
-  } else {
-    await User.findOneAndUpdate(
-      { telegramId: ctx.from.id },
-      { $addToSet: { favorites: movieId } }
-    );
-    await ctx.answerCbQuery('❤️ Sevimlilarga qo\'shildi!');
-  }
-});
-
-// Watchlist
-bot.action(/watchlist_(\d+)/, async (ctx) => {
-  const movieId = parseInt(ctx.match[1]);
-  const user = await User.findOne({ telegramId: ctx.from.id });
-  
-  if (user.watchlist && user.watchlist.includes(movieId)) {
-    await removeFromWatchlist(ctx.from.id, movieId);
-    await ctx.answerCbQuery('❌ Watchlist\'dan o\'chirildi');
-  } else {
-    await addToWatchlist(ctx.from.id, movieId);
-    await ctx.answerCbQuery('✅ Watchlist\'ga qo\'shildi!');
-  }
-});
-
-// Ulashish
-bot.action(/share_(\d+)/, async (ctx) => {
-  const movieId = parseInt(ctx.match[1]);
-  const movie = await getMovieDetails(movieId);
-  
-  if (movie) {
-    const shareText = generateShareMessage(movie);
-    await ctx.answerCbQuery();
-    await ctx.replyWithMarkdown(shareText);
-  }
-});
-
-// Yuklab olish
-bot.action(/download_(\d+)/, async (ctx) => {
-  const movieId = parseInt(ctx.match[1]);
-  const movie = await getMovieDetails(movieId);
-  
-  if (!movie) {
-    return ctx.answerCbQuery('❌ Film ma\'lumotlari topilmadi');
-  }
-
-  const canDownload = await downloadCheck(ctx, movieId, movie.title);
-  
-  if (!canDownload) {
-    return;
-  }
-
-  await ctx.answerCbQuery('✅ Yuklab olish linki yuborildi!');
-  
-  await DownloadLog.create({
-    userId: ctx.from.id,
-    movieId: movieId,
-    movieTitle: movie.title
-  });
-
-  const downloadLinks = `
-🎬 <b>${movie.title}</b>
-
-📥 <b>Yuklab Olish Linklari:</b>
-
-<b>Sifat:</b> 1080p BluRay
-🔗 <a href="https://example.com/download/${movieId}/1080p">Yuklab olish 1080p</a>
-
-<b>Sifat:</b> 720p
-🔗 <a href="https://example.com/download/${movieId}/720p">Yuklab olish 720p</a>
-
-<b>Sifat:</b> 480p
-🔗 <a href="https://example.com/download/${movieId}/480p">Yuklab olish 480p</a>
-
-⚠️ <i>Linklar 24 soat amal qiladi</i>
-
-💡 <b>Eslatma:</b> Bu demo linklar. O'z server yoki CDN linkingizni qo'shing.
-  `;
-
-  await ctx.replyWithHTML(downloadLinks);
-});
-
-// Obuna tekshirish
-bot.action('check_subscription', async (ctx) => {
-  const { checkSubscription } = require('./middleware');
-  const isSubscribed = await checkSubscription(ctx);
-  
-  if (isSubscribed) {
-    await ctx.answerCbQuery('✅ Obuna tasdiqlandi!');
-    await ctx.reply('✅ Ajoyib! Endi botdan to\'liq foydalanishingiz mumkin.\n\n/start ni bosing.');
-  } else {
-    await ctx.answerCbQuery('❌ Hali obuna bo\'lmagansiz!', { show_alert: true });
-  }
-});
-
-// Yuklab olishni qayta urinish
-bot.action(/download_retry_(\d+)/, async (ctx) => {
-  const movieId = parseInt(ctx.match[1]);
-  const movie = await getMovieDetails(movieId);
-  
-  const canDownload = await downloadCheck(ctx, movieId, movie.title);
-  
-  if (canDownload) {
-    await ctx.answerCbQuery('✅ Yuklab olish linki yuborildi!');
-    
-    await DownloadLog.create({
-      userId: ctx.from.id,
-      movieId: movieId,
-      movieTitle: movie.title
+async function showSubscriptionRequired(chatId, notSubscribed, messageId = null) {
+    const buttons = notSubscribed.map(channel => {
+        const icon = {
+            'telegram': '📱',
+            'instagram': '📷',
+            'youtube': '📺',
+            'twitter': '🐦',
+            'tiktok': '🎵'
+        }[channel.type] || '🔗';
+        
+        return [{
+            text: `${icon} ${channel.name}`,
+            url: channel.url
+        }];
     });
     
-    const downloadLinks = `
-🎬 <b>${movie.title}</b>
+    buttons.push([{
+        text: '✅ Obunani tekshirish',
+        callback_data: 'check_subscription'
+    }]);
+    
+    const text = `⚠️ <b>DIQQAT!</b>
 
-📥 Yuklab olish linki yuqorida berilgan.
-    `;
-    await ctx.replyWithHTML(downloadLinks);
-  }
-});
+Kinolarni ko'rish uchun quyidagi kanallarga OBUNA bo'lishingiz SHART! 👇
 
-// Yordam
-bot.hears('ℹ️ Yordam', async (ctx) => {
-  const helpText = `
-ℹ️ <b>Bot Qo'llanma</b>
-
-<b>Asosiy Funksiyalar:</b>
-
-🔍 <b>Qidirish:</b>
-Film nomini yuboring va natijalarni ko'ring
-
-🔥 <b>Mashhur Filmlar:</b>
-Eng ko'p ko'rilgan filmlar ro'yxati
-
-🎯 <b>Men Uchun:</b>
-Sizga mos shaxsiy tavsiyalar
-
-🎭 <b>Janrlar:</b>
-O'zingizga yoqqan janrdagi filmlarni toping
-
-⭐ <b>Sevimlilar:</b>
-Sevimli filmlaringizni saqlang
-
-📋 <b>Watchlist:</b>
-Keyinroq ko'rish uchun saqlang
-
-📥 <b>Yuklab Olish:</b>
-Filmlarni turli sifatda yuklab oling
-
-⚙️ <b>Sozlamalar:</b>
-Tilni o'zgartirish va statistika
-
-⚠️ <b>Muhim:</b>
-Botdan foydalanish uchun kanalimizga obuna bo'ling!
-
-🎬 <b>Premium Funksiyalar:</b>
-• AI tavsiyalar
-• Ko'p tillilik
-• Watchlist
-• Statistika
-• Ulashish
-
-💬 Savol yoki takliflar: @support_username
-🌐 Veb-sayt: https://your-website.com
-  `;
-  
-  await ctx.replyWithHTML(helpText);
-});
-
-// Xatoliklarni tutish
-bot.catch((err, ctx) => {
-  console.error('Bot xatosi:', err);
-  ctx.reply('❌ Xatolik yuz berdi. Iltimos, qayta urinib ko\'ring.');
-});
-
-// Admin panel
-// Oxirgi qismini quyidagicha o'zgartiring:
-
-// Admin panel
-require('./admin')(bot);
-
-// Botni ishga tushirish
-if (process.env.RENDER) {
-  // Render.com - webhook mode
-  const domain = process.env.RENDER_EXTERNAL_URL || `https://${process.env.RENDER_SERVICE_NAME}.onrender.com`;
-  const port = process.env.PORT || 10000;
-  
-  // Express server yaratish (admin panel uchun)
-  // Admin panel va serverni sozlash
-const express = require('express');
-const adminApp = express();
-const PORT = process.env.PORT || 10000;
-
-// Middleware
-adminApp.set('view engine', 'ejs');
-adminApp.use(express.urlencoded({ extended: true }));
-adminApp.use(express.json());
-
-// Health check
-const { setupHealthEndpoint } = require('./monitoring');
-setupHealthEndpoint(adminApp, bot);
-
-// Admin routes (admin.js dan import qilish o'rniga bu yerda qo'shish)
-// ... (admin.js dagi barcha route'larni bu yerga ko'chiring)
-
-// Botni ishga tushirish
-if (process.env.RENDER) {
-  // Production - Webhook mode
-  const domain = process.env.RENDER_EXTERNAL_URL || 
-                 `https://movie-bot-d3do.onrender.com`;
-  
-  // Webhook sozlash
-  bot.telegram.setWebhook(`${domain}/webhook`).then(() => {
-    console.log('✅ Webhook sozlandi:', `${domain}/webhook`);
-  });
-  
-  // Bot webhook callback
-  adminApp.use(bot.webhookCallback('/webhook'));
-  
-  // Server ishga tushirish
-  adminApp.listen(PORT, '0.0.0.0', () => {
-    console.log('✅ Server ishga tushdi!');
-    console.log(`🌐 URL: ${domain}`);
-    console.log(`📊 Admin: ${domain}/admin/login`);
-  });
-  
-} else {
-  // Development - Polling mode
-  bot.launch().then(() => {
-    console.log('✅ Bot ishga tushdi (Polling)!');
-  });
-  
-  adminApp.listen(PORT, () => {
-    console.log(`🌐 Admin: http://localhost:${PORT}/admin/login`);
-  });
+Obuna bo'lgach "✅ Obunani tekshirish" tugmasini bosing.`;
+    
+    const options = {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: buttons }
+    };
+    
+    if (messageId) {
+        await bot.editMessageText(text, {
+            chat_id: chatId,
+            message_id: messageId,
+            ...options
+        });
+    } else {
+        await bot.sendMessage(chatId, text, options);
+    }
 }
 
-// Graceful shutdown
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+// ============================================
+// KOMANDALAR
+// ============================================
 
+// /start
+bot.onText(/\/start/, async (msg) => {
+    const chatId = msg.chat.id;
+    const user = msg.from;
+    
+    const isPremium = await db.checkPremium(user.id);
+    const premiumBadge = isPremium ? '💎 ' : '';
+    
+    const welcomeText = `${premiumBadge}👋 Assalomu alaykum, <b>${user.first_name}</b>!
+
+🎬 <b>Kino Bot</b>ga xush kelibsiz!
+
+🔢 Kino kodini yuboring va kinoni tomosha qiling!
+Misol: <code>55</code>
+
+📊 <b>Statistika:</b>
+├ 👥 Foydalanuvchilar: ${Object.keys(db.users).length}
+├ 🎬 Kinolar: ${Object.keys(db.movies).length}
+└ 📢 Kanallar: ${db.channels.length}`;
+    
+    const buttons = [
+        [{ text: '🔍 Qidirish', switch_inline_query_current_chat: '' }],
+        [
+            { text: '🎬 Kategoriyalar', callback_data: 'categories' },
+            { text: '⭐ Top kinolar', callback_data: 'top_movies' }
+        ]
+    ];
+    
+    if (!isPremium) {
+        buttons.push([{ text: '💎 Premium', callback_data: 'premium' }]);
+    } else {
+        buttons.push([{ text: '💎 Premium Status', callback_data: 'premium_status' }]);
+    }
+    
+    if (config.adminIds.includes(user.id)) {
+        buttons.push([{ text: '⚙️ Admin Panel', callback_data: 'admin_panel' }]);
+    }
+    
+    await bot.sendMessage(chatId, welcomeText, {
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: buttons }
+    });
+});
+
+// /stats - Shaxsiy statistika
+bot.onText(/\/stats/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    
+    const userStats = await analytics.getUserAnalytics(userId);
+    
+    if (!userStats) {
+        return bot.sendMessage(chatId, '❌ Statistika topilmadi');
+    }
+    
+    const text = `📊 <b>SIZNING STATISTIKANGIZ</b>
+
+👁 Ko'rilgan kinolar: ${userStats.watchCount}
+🔍 Qidiruvlar: ${userStats.searchCount}
+📅 Qo'shilgan: ${new Date(userStats.joinedDate).toLocaleDateString('uz-UZ')}
+⏰ Oxirgi faollik: ${new Date(userStats.lastActive).toLocaleDateString('uz-UZ')}
+${userStats.isPremium ? '💎 Premium: Faol' : ''}`;
+    
+    await bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+});
+
+// /help
+bot.onText(/\/help/, async (msg) => {
+    const text = `❓ <b>YORDAM</b>
+
+<b>Qanday foydalanish:</b>
+1️⃣ Kino kodini yuboring (masalan: 55)
+2️⃣ Kanallarga obuna bo'ling
+3️⃣ Kinoni tomosha qiling!
+
+<b>Komandalar:</b>
+/start - Botni ishga tushirish
+/stats - Shaxsiy statistika
+/premium - Premium obuna
+/help - Yordam
+
+<b>Muammo bo'lsa:</b>
+Admin bilan bog'laning: @admin_username`;
+    
+    await bot.sendMessage(msg.chat.id, text, { parse_mode: 'HTML' });
+});
+
+// ============================================
+// KINO QIDIRISH (Kod orqali)
+// ============================================
+bot.on('message', async (msg) => {
+    if (!msg.text) return;
+    if (msg.text.startsWith('/')) return;
+    if (adminStates.has(msg.from.id)) return;
+    
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    const code = msg.text.trim();
+    
+    // Faqat raqamlarni qabul qilish
+    if (!/^\d+$/.test(code)) return;
+    
+    // Kinoni topish
+    const movie = await db.getMovie(code);
+    
+    if (!movie) {
+        return bot.sendMessage(chatId,
+            `❌ <code>${code}</code> kodli kino topilmadi.\n\n` +
+            `Iltimos, to'g'ri kodni kiriting.`,
+            { parse_mode: 'HTML' }
+        );
+    }
+    
+    // Premium check
+    const isPremium = await db.checkPremium(userId);
+    
+    // Premium bo'lmasa obuna majburiy
+    if (!isPremium) {
+        const { subscribed, notSubscribed } = await checkSubscription(userId);
+        
+        if (!subscribed) {
+            return showSubscriptionRequired(chatId, notSubscribed);
+        }
+    }
+    
+    // Kinoni yuborish
+    try {
+        // Reklama (premium bo'lmasa)
+        if (!isPremium && Math.random() < 0.3) { // 30% ehtimol
+            await bot.sendMessage(chatId,
+                '📢 <b>Reklama</b>\n\n' +
+                '💎 Premium obuna bilan reklamasiz tomosha qiling!\n' +
+                '/premium - Batafsil',
+                { parse_mode: 'HTML' }
+            );
+        }
+        
+        const caption = `🎬 <b>${movie.title}</b>
+
+📅 Yil: ${movie.year || 'N/A'}
+📁 Janr: ${movie.genre || 'N/A'}
+🌐 Til: ${movie.language || 'N/A'}
+⭐️ Reyting: ${movie.rating || 'N/A'}
+🔢 Kod: <code>${code}</code>
+
+📝 ${movie.description || ''}
+
+👁 Ko'rishlar: ${movie.views || 0}${isPremium ? ' | 💎 Premium' : ''}`;
+        
+        await bot.sendVideo(chatId, movie.fileId, {
+            caption,
+            parse_mode: 'HTML',
+            supports_streaming: true
+        });
+        
+        // Statistikani yangilash
+        await db.incrementViews(code);
+        await db.updateUser(userId, {
+            watchCount: (db.users[userId].watchCount || 0) + 1
+        });
+        await db.recordView(userId, code);
+        
+    } catch (error) {
+        monitoring.logError(error, `Sending movie ${code} to user ${userId}`);
+        await bot.sendMessage(chatId,
+            '❌ Kinoni yuborishda xatolik yuz berdi.\n' +
+            'Iltimos, qaytadan urinib ko\'ring.'
+        );
+    }
+});
+
+// ============================================
+// CALLBACK QUERY HANDLERS
+// ============================================
+bot.on('callback_query', async (query) => {
+    const chatId = query.message.chat.id;
+    const messageId = query.message.message_id;
+    const userId = query.from.id;
+    const data = query.data;
+    
+    try {
+        // Obunani tekshirish
+        if (data === 'check_subscription') {
+            const { subscribed, notSubscribed } = await checkSubscription(userId);
+            
+            if (subscribed) {
+                await bot.editMessageText(
+                    '✅ <b>Obuna tasdiqlandi!</b>\n\n' +
+                    'Endi kino kodini yuboring. Misol: <code>55</code>',
+                    {
+                        chat_id: chatId,
+                        message_id: messageId,
+                        parse_mode: 'HTML'
+                    }
+                );
+            } else {
+                await bot.answerCallbackQuery(query.id, {
+                    text: '❌ Siz hali barcha kanallarga obuna bo\'lmagansiz!',
+                    show_alert: true
+                });
+                await showSubscriptionRequired(chatId, notSubscribed, messageId);
+            }
+            return;
+        }
+        
+        // Premium
+        if (data === 'premium') {
+            await premiumManager.showPlans(chatId, bot);
+            return;
+        }
+        
+        if (data === 'premium_status') {
+            const status = await premiumManager.checkStatus(userId);
+            await bot.sendMessage(chatId, status.message, { parse_mode: 'HTML' });
+            return;
+        }
+        
+        if (data.startsWith('premium_buy_')) {
+            const plan = data.replace('premium_buy_', '');
+            // Bu yerda to'lov tizimini ulash kerak
+            await bot.answerCallbackQuery(query.id, {
+                text: 'To\'lov tizimi hozirda ishlab chiqilmoqda...',
+                show_alert: true
+            });
+            return;
+        }
+        
+        // Admin panel
+        if (data === 'admin_panel') {
+            if (!config.adminIds.includes(userId)) {
+                return bot.answerCallbackQuery(query.id, {
+                    text: '❌ Sizda admin huquqi yo\'q!',
+                    show_alert: true
+                });
+            }
+            await adminPanel.showMainPanel(chatId, messageId);
+            return;
+        }
+        
+        if (data === 'admin_stats') {
+            await adminPanel.showStats(chatId, messageId);
+            return;
+        }
+        
+        if (data === 'admin_analytics') {
+            await adminPanel.showAnalytics(chatId, messageId);
+            return;
+        }
+        
+        if (data === 'admin_users' || data.startsWith('admin_users_')) {
+            const page = data === 'admin_users' ? 0 : parseInt(data.split('_')[2]);
+            await adminPanel.showUsersList(chatId, messageId, page);
+            return;
+        }
+        
+        // Admin - Kino qo'shish
+        if (data === 'admin_add_movie') {
+            adminStates.set(userId, { action: 'add_movie', step: 'code' });
+            await bot.editMessageText(
+                '🔢 <b>Kino kodini kiriting:</b>\n\n' +
+                'Misol: 55\n\n' +
+                '❌ Bekor qilish: /cancel',
+                {
+                    chat_id: chatId,
+                    message_id: messageId,
+                    parse_mode: 'HTML'
+                }
+            );
+            return;
+        }
+        
+        // Admin - Kanal qo'shish
+        if (data === 'admin_add_channel') {
+            const buttons = [
+                [{ text: '📱 Telegram', callback_data: 'channel_telegram' }],
+                [{ text: '📷 Instagram', callback_data: 'channel_instagram' }],
+                [{ text: '📺 YouTube', callback_data: 'channel_youtube' }],
+                [{ text: '🐦 Twitter/X', callback_data: 'channel_twitter' }],
+                [{ text: '🎵 TikTok', callback_data: 'channel_tiktok' }],
+                [{ text: '🔙 Orqaga', callback_data: 'admin_panel' }]
+            ];
+            
+            await bot.editMessageText('📢 Kanal turini tanlang:', {
+                chat_id: chatId,
+                message_id: messageId,
+                reply_markup: { inline_keyboard: buttons }
+            });
+            return;
+        }
+        
+        if (data.startsWith('channel_')) {
+            const channelType = data.replace('channel_', '');
+            adminStates.set(userId, { action: 'add_channel', type: channelType });
+            
+            let instructions = '';
+            if (channelType === 'telegram') {
+                instructions = `📱 <b>Telegram kanal qo'shish</b>\n\n` +
+                    `Ma'lumotlarni quyidagi formatda yuboring:\n\n` +
+                    `<code>Kanal nomi\nhttps://t.me/kanal\n@kanal\n-1001234567890</code>`;
+            } else {
+                const icons = { instagram: '📷', youtube: '📺', twitter: '🐦', tiktok: '🎵' };
+                instructions = `${icons[channelType]} <b>${channelType} qo'shish</b>\n\n` +
+                    `<code>Sahifa nomi\nhttps://url.com</code>`;
+            }
+            
+            await bot.editMessageText(instructions + '\n\n❌ Bekor qilish: /cancel', {
+                chat_id: chatId,
+                message_id: messageId,
+                parse_mode: 'HTML'
+            });
+            return;
+        }
+        
+        // Broadcast
+        if (data === 'admin_broadcast') {
+            adminStates.set(userId, { action: 'broadcast' });
+            await bot.editMessageText(
+                '📣 <b>Xabar yuborish</b>\n\n' +
+                'Barcha foydalanuvchilarga yubormoqchi bo\'lgan xabaringizni yozing:\n\n' +
+                '❌ Bekor qilish: /cancel',
+                {
+                    chat_id: chatId,
+                    message_id: messageId,
+                    parse_mode: 'HTML'
+                }
+            );
+            return;
+        }
+        
+        await bot.answerCallbackQuery(query.id);
+        
+    } catch (error) {
+        monitoring.logError(error, `Callback query: ${data}`);
+        await bot.answerCallbackQuery(query.id, {
+            text: '❌ Xatolik yuz berdi',
+            show_alert: true
+        });
+    }
+});
+
+// ============================================
+// ADMIN STATE HANDLERS
+// ============================================
+bot.on('message', async (msg) => {
+    const userId = msg.from.id;
+    const chatId = msg.chat.id;
+    
+    if (!adminStates.has(userId)) return;
+    
+    const state = adminStates.get(userId);
+    
+    // Bekor qilish
+    if (msg.text === '/cancel') {
+        adminStates.delete(userId);
+        await bot.sendMessage(chatId, '❌ Amal bekor qilindi.');
+        await adminPanel.showMainPanel(chatId);
+        return;
+    }
+    
+    try {
+        // Kino qo'shish
+        if (state.action === 'add_movie') {
+            if (state.step === 'code') {
+                const code = msg.text.trim();
+                if (!/^\d+$/.test(code)) {
+                    return bot.sendMessage(chatId, '❌ Faqat raqam kiriting!');
+                }
+                if (await db.getMovie(code)) {
+                    return bot.sendMessage(chatId, `❌ ${code} kodli kino mavjud!`);
+                }
+                state.code = code;
+                state.step = 'file';
+                adminStates.set(userId, state);
+                await bot.sendMessage(chatId, `✅ Kod: ${code}\n\n📹 Video faylni yuboring:`);
+            } else if (state.step === 'file') {
+                if (!msg.video) {
+                    return bot.sendMessage(chatId, '❌ Video fayl yuboring!');
+                }
+                state.fileId = msg.video.file_id;
+                state.step = 'info';
+                adminStates.set(userId, state);
+                await bot.sendMessage(chatId,
+                    '✅ Video qabul qilindi!\n\n' +
+                    'Kino haqida ma\'lumot yuboring:\n\n' +
+                    'Nomi: Spiderman\n' +
+                    'Yil: 2024\n' +
+                    'Janr: Action\n' +
+                    'Til: O\'zbek\n' +
+                    'Reyting: 8.5\n' +
+                    'Tavsif: ...'
+                );
+            } else if (state.step === 'info') {
+                const info = parseMovieInfo(msg.text);
+                if (!info.title) {
+                    return bot.sendMessage(chatId, '❌ Kino nomi yo\'q!');
+                }
+                
+                await db.addMovie(state.code, {
+                    fileId: state.fileId,
+                    ...info
+                });
+                
+                await bot.sendMessage(chatId,
+                    `✅ Kino qo'shildi!\n\n` +
+                    `🔢 Kod: <code>${state.code}</code>\n` +
+                    `🎬 Nomi: ${info.title}`,
+                    { parse_mode: 'HTML' }
+                );
+                
+                adminStates.delete(userId);
+                await adminPanel.showMainPanel(chatId);
+            }
+            return;
+        }
+        
+        // Kanal qo'shish
+        if (state.action === 'add_channel') {
+            const lines = msg.text.trim().split('\n');
+            
+            if (state.type === 'telegram' && lines.length >= 4) {
+                await db.addChannel({
+                    type: 'telegram',
+                    name: lines[0],
+                    url: lines[1],
+                    username: lines[2],
+                    channelId: lines[3]
+                });
+            } else if (lines.length >= 2) {
+                await db.addChannel({
+                    type: state.type,
+                    name: lines[0],
+                    url: lines[1]
+                });
+            } else {
+                return bot.sendMessage(chatId, '❌ Ma\'lumot to\'liq emas!');
+            }
+            
+            await bot.sendMessage(chatId, '✅ Kanal qo\'shildi!');
+            adminStates.delete(userId);
+            await adminPanel.showMainPanel(chatId);
+            return;
+        }
+        
+        // Broadcast
+        if (state.action === 'broadcast') {
+            await bot.sendMessage(chatId, '📤 Xabar yuborilmoqda...');
+            
+            let success = 0, failed = 0;
+            
+            for (const uid of Object.keys(db.users)) {
+                try {
+                    await bot.copyMessage(uid, chatId, msg.message_id);
+                    success++;
+                    await new Promise(r => setTimeout(r, 50));
+                } catch {
+                    failed++;
+                }
+            }
+            
+            await bot.sendMessage(chatId,
+                `✅ Yuborish tugadi!\n\n` +
+                `├ ✅ Yuborildi: ${success}\n` +
+                `└ ❌ Xatolik: ${failed}`
+            );
+            
+            adminStates.delete(userId);
+            await adminPanel.showMainPanel(chatId);
+            return;
+        }
+        
+    } catch (error) {
+        monitoring.logError(error, `Admin state: ${state.action}`);
+        await bot.sendMessage(chatId, '❌ Xatolik yuz berdi!');
+    }
+});
+
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
+function parseMovieInfo(text) {
+    const info = {};
+    const lines = text.split('\n');
+    
+    for (const line of lines) {
+        if (!line.includes(':')) continue;
+        
+        const [key, ...valueParts] = line.split(':');
+        const value = valueParts.join(':').trim();
+        const keyLower = key.trim().toLowerCase();
+        
+        if (['nomi', 'nom', 'title'].includes(keyLower)) info.title = value;
+        else if (['yil', 'year'].includes(keyLower)) info.year = value;
+        else if (['janr', 'genre'].includes(keyLower)) info.genre = value;
+        else if (['til', 'language'].includes(keyLower)) info.language = value;
+        else if (['reyting', 'rating'].includes(keyLower)) info.rating = value;
+        else if (['tavsif', 'description'].includes(keyLower)) info.description = value;
+    }
+    
+    return info;
 }
 
+// ============================================
+// ERROR HANDLING
+// ============================================
+bot.on('polling_error', (error) => {
+    monitoring.logError(error, 'Polling error');
+});
+
+process.on('unhandledRejection', (error) => {
+    monitoring.logError(error, 'Unhandled rejection');
+});
+
+// ============================================
+// STARTUP
+// ============================================
+console.log('🚀 Bot ishga tushdi...');
+console.log('👤 Admin IDs:', config.adminIds);
+console.log('📊 Kinolar:', Object.keys(db.movies).length);
+console.log('📢 Kanallar:', db.channels.length);
+console.log('👥 Foydalanuvchilar:', Object.keys(db.users).length);
+
+// Health check endpoint (Render.com uchun)
+const http = require('http');
+http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Bot is running!');
+}).listen(config.port, () => {
+    console.log(`🌐 Health check server: http://localhost:${config.port}`);
+});
